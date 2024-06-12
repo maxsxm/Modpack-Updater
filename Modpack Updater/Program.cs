@@ -16,15 +16,23 @@ class Program
 
     static async Task Main(string[] args)
     {
-        var isService = args.Contains("--service");
-
-        // Read the .config file and start the timer
-        await CheckForUpdates(isService);
-
-        // If the application is running as a service, prevent it from exiting
-        if (isService)
+        try
         {
-            await Task.Delay(-1);
+            var isService = args.Contains("--service");
+
+            // Read the .config file and start the timer
+            await CheckForUpdates(isService);
+
+            // If the application is running as a service, prevent it from exiting
+            if (isService)
+            {
+                await Task.Delay(-1);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Log the error and the stack trace
+            LogError($"{ex.Message}\n{ex.StackTrace}");
         }
     }
 
@@ -33,7 +41,7 @@ class Program
         try
         {
             // Set the name of the configuration file
-            var configFileName = "configuration.txt";
+            var configFileName = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "configuration.txt");
 
             // Check if the configuration file exists
             if (!File.Exists(configFileName))
@@ -104,7 +112,11 @@ class Program
 
             // Initialize and start the timer
             timer = new System.Timers.Timer(checkInTime * 60000);
-            timer.Elapsed += async (sender, e) => await CheckForUpdates(isService);
+            timer.Elapsed += async (sender, e) =>
+            {
+                LogError("Checking for updates...");
+                await CheckForUpdates(isService);
+            };
             timer.Start();
 
             var client = new GitHubClient(new ProductHeaderValue("MyApp"));
@@ -117,17 +129,22 @@ class Program
             if (localCommit != latestCommit)
             {
                 // Initialize the directory as a git repository if it's not already one
-                if (!Directory.Exists(Path.Combine(directoryPath, ".git")))
+                if (directoryPath != null && !Directory.Exists(Path.Combine(directoryPath, ".git")))
                 {
                     RunCommand("init", directoryPath, isService);
                     RunCommand($"remote add origin https://github.com/{owner}/{repo}.git", directoryPath, isService);
-                    RunCommand($"pull origin {branch}", directoryPath, isService);
+                    RunCommand("commit --allow-empty -m \"Initial commit\"", directoryPath, isService);
                 }
-                else
+
+                if (directoryPath == null)
                 {
-                    // Pull the changes
-                    RunCommand($"pull origin {branch}", directoryPath, isService);
+                    LogError("Directory path is not set in the configuration file.");
+                    return;
                 }
+
+                // Fetch the changes and reset the local branch to the state of the remote branch
+                RunCommand($"fetch origin {branch}", directoryPath, isService);
+                RunCommand($"reset --hard origin/{branch}", directoryPath, isService);
 
                 // Update the local commit
                 File.WriteAllText(localCommitPath, latestCommit);
@@ -141,8 +158,8 @@ class Program
         }
         catch (Exception ex)
         {
-            // Log the error
-            LogError(ex.Message);
+            // Log the error and the stack trace
+            LogError($"{ex.Message}\n{ex.StackTrace}");
         }
     }
 
@@ -167,6 +184,11 @@ class Program
         };
         process.StartInfo = startInfo;
         process.Start();
+        var output = process.StandardOutput.ReadToEnd();
+        if (!string.IsNullOrEmpty(output))
+        {
+            LogError($"Command output: {output}");
+        }
         process.WaitForExit();
     }
 
@@ -177,5 +199,8 @@ class Program
 
         // Log the error
         File.AppendAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs", "errors_log.txt"), DateTime.Now + ": An error occurred: " + message + Environment.NewLine);
+
+        // Print the error message to the console
+        Console.WriteLine("An error occurred: " + message);
     }
 }
